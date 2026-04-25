@@ -22,6 +22,30 @@ import sys
 from typing import Optional
 
 
+def _gh_api_post(endpoint: str, request_json: str) -> dict:
+    """Run a gh API POST request and return the parsed JSON response."""
+    cmd = [
+        'gh', 'api',
+        '-X', 'POST',
+        '-H', 'Accept: application/vnd.github+json',
+        endpoint,
+        '--input', '-'
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            input=request_json,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return json.loads(result.stdout)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"gh API request failed: {e.stderr}")
+    except FileNotFoundError:
+        raise RuntimeError("gh CLI not found. Please install: https://cli.github.com/")
+
+
 def add_inline_comment(
     owner: str,
     repo: str,
@@ -73,28 +97,10 @@ def add_inline_comment(
     # Convert to JSON string for gh CLI
     request_json = json.dumps(request_body)
 
-    # Build gh api command
-    cmd = [
-        'gh', 'api',
-        '-X', 'POST',
-        '-H', 'Accept: application/vnd.github+json',
-        f'/repos/{owner}/{repo}/pulls/{pr_number}/comments',
-        '--input', '-'
-    ]
-
     try:
-        result = subprocess.run(
-            cmd,
-            input=request_json,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return json.loads(result.stdout)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Failed to add comment: {e.stderr}")
-    except FileNotFoundError:
-        raise RuntimeError("gh CLI not found. Please install: https://cli.github.com/")
+        return _gh_api_post(f'/repos/{owner}/{repo}/pulls/{pr_number}/comments', request_json)
+    except RuntimeError as e:
+        raise RuntimeError(f"Failed to add comment: {e}") from e
 
 
 def is_outside_diff_error(error_message: str) -> bool:
@@ -136,27 +142,10 @@ def add_pr_comment(
     request_body = {"body": body}
     request_json = json.dumps(request_body)
 
-    cmd = [
-        'gh', 'api',
-        '-X', 'POST',
-        '-H', 'Accept: application/vnd.github+json',
-        f'/repos/{owner}/{repo}/issues/{pr_number}/comments',
-        '--input', '-'
-    ]
-
     try:
-        result = subprocess.run(
-            cmd,
-            input=request_json,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return json.loads(result.stdout)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Failed to add PR comment: {e.stderr}")
-    except FileNotFoundError:
-        raise RuntimeError("gh CLI not found. Please install: https://cli.github.com/")
+        return _gh_api_post(f'/repos/{owner}/{repo}/issues/{pr_number}/comments', request_json)
+    except RuntimeError as e:
+        raise RuntimeError(f"Failed to add PR comment: {e}") from e
 
 
 def get_latest_commit(owner: str, repo: str, pr_number: str) -> str:
@@ -228,7 +217,7 @@ def main():
             print(f"   Falling back to a regular PR comment...")
             fallback_body = (
                 f"**Review comment for `{args.path}` line {args.line}**"
-                f" (line is outside the diff):\n\n{args.body}"
+                + f" (line is outside the diff):\n\n{args.body}"
             )
             response = add_pr_comment(
                 owner=args.owner,
