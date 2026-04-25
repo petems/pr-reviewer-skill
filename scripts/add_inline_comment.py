@@ -105,14 +105,21 @@ def add_inline_comment(
 
 def is_outside_diff_error(error_message: str) -> bool:
     """Return True when the GitHub API rejected a comment because the line is outside the diff."""
-    indicators = [
-        "not part of the diff",
-        "pull_request_review_thread.line",
-        "outside of the diff",
-        "line is not part",
-    ]
-    error_lower = error_message.lower()
-    return any(indicator.lower() in error_lower for indicator in indicators)
+    # Try to parse as JSON and check for structured error
+    try:
+        error_data = json.loads(error_message)
+        if isinstance(error_data, dict) and "errors" in error_data:
+            for entry in error_data["errors"]:
+                if entry.get("code") == "unprocessable":
+                    field = entry.get("field", "")
+                    message = entry.get("message", "")
+                    if "pull_request_review_thread.line" in field or "pull_request_review_thread.line" in message:
+                        return True
+    except (json.JSONDecodeError, TypeError, KeyError):
+        pass
+
+    # Fall back to substring check with canonical phrases
+    return "not part of the diff" in error_message or "pull_request_review_thread.line" in error_message
 
 
 def add_pr_comment(
@@ -214,7 +221,7 @@ def main():
 
             # The line is outside the diff - fall back to a regular PR comment
             print(f"⚠️  Line {args.line} in {args.path} is outside the PR diff.")
-            print(f"   Falling back to a regular PR comment...")
+            print("   Falling back to a regular PR comment...")
             fallback_body = (
                 f"**Review comment for `{args.path}` line {args.line}**"
                 + f" (line is outside the diff):\n\n{args.body}"
