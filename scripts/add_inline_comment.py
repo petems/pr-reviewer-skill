@@ -2,12 +2,17 @@
 """
 Add inline code review comments to a GitHub PR.
 
+If the target line is outside the PR diff, the script automatically falls back
+to posting a regular PR comment that includes the file and line context.
+Use --no-fallback to disable this behaviour and fail instead.
+
 Usage:
     python add_inline_comment.py <owner> <repo> <pr_number> <commit_id> <file_path> <line> <comment> [--side RIGHT|LEFT]
 
 Example:
     python add_inline_comment.py owner repo 123 abc123def "src/main.py" 42 "Consider refactoring this logic"
     python add_inline_comment.py owner repo 123 abc123def "src/main.py" 42 "Check edge cases" --side LEFT
+    python add_inline_comment.py owner repo 123 abc123def "src/main.py" 42 "Outside diff" --no-fallback
 """
 
 import argparse
@@ -92,6 +97,68 @@ def add_inline_comment(
         raise RuntimeError("gh CLI not found. Please install: https://cli.github.com/")
 
 
+def is_outside_diff_error(error_message: str) -> bool:
+    """Return True when the GitHub API rejected a comment because the line is outside the diff."""
+    indicators = [
+        "not part of the diff",
+        "pull_request_review_thread.line",
+        "outside of the diff",
+        "line is not part",
+    ]
+    error_lower = error_message.lower()
+    return any(indicator.lower() in error_lower for indicator in indicators)
+
+
+def add_pr_comment(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    body: str,
+) -> dict:
+    """
+    Add a regular (non-inline) PR comment.
+
+    Used as a fallback when an inline comment cannot be placed on a line that
+    is outside the PR diff.
+
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        pr_number: Pull request number
+        body: Comment text
+
+    Returns:
+        API response as dict
+
+    Raises:
+        RuntimeError: If gh command fails
+    """
+    request_body = {"body": body}
+    request_json = json.dumps(request_body)
+
+    cmd = [
+        'gh', 'api',
+        '-X', 'POST',
+        '-H', 'Accept: application/vnd.github+json',
+        f'/repos/{owner}/{repo}/issues/{pr_number}/comments',
+        '--input', '-'
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            input=request_json,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return json.loads(result.stdout)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to add PR comment: {e.stderr}")
+    except FileNotFoundError:
+        raise RuntimeError("gh CLI not found. Please install: https://cli.github.com/")
+
+
 def get_latest_commit(owner: str, repo: str, pr_number: str) -> str:
     """Get the latest commit SHA for a PR."""
     try:
@@ -124,6 +191,8 @@ def main():
                        help='Starting line for multi-line comment')
     parser.add_argument('--start-side', choices=['RIGHT', 'LEFT'],
                        help='Starting side for multi-line comment')
+    parser.add_argument('--no-fallback', action='store_true',
+                       help='Disable fallback to regular PR comment when line is outside the diff')
 
     args = parser.parse_args()
 
@@ -137,18 +206,40 @@ def main():
 
         # Add the inline comment
         print(f"Adding comment to {args.path}:{args.line}...")
-        response = add_inline_comment(
-            owner=args.owner,
-            repo=args.repo,
-            pr_number=args.pr_number,
-            commit_id=commit_id,
-            path=args.path,
-            line=args.line,
-            body=args.body,
-            side=args.side,
-            start_line=args.start_line,
-            start_side=args.start_side
-        )
+        try:
+            response = add_inline_comment(
+                owner=args.owner,
+                repo=args.repo,
+                pr_number=args.pr_number,
+                commit_id=commit_id,
+                path=args.path,
+                line=args.line,
+                body=args.body,
+                side=args.side,
+                start_line=args.start_line,
+                start_side=args.start_side
+            )
+        except RuntimeError as inline_error:
+            if args.no_fallback or not is_outside_diff_error(str(inline_error)):
+                raise
+
+            # The line is outside the diff - fall back to a regular PR comment
+            print(f"⚠️  Line {args.line} in {args.path} is outside the PR diff.")
+            print(f"   Falling back to a regular PR comment...")
+            fallback_body = (
+                f"**Review comment for `{args.path}` line {args.line}**"
+                f" (line is outside the diff):\n\n{args.body}"
+            )
+            response = add_pr_comment(
+                owner=args.owner,
+                repo=args.repo,
+                pr_number=args.pr_number,
+                body=fallback_body,
+            )
+            print(f"\n✅ Regular PR comment added successfully (fallback)!")
+            print(f"Comment ID: {response.get('id')}")
+            print(f"URL: {response.get('html_url')}")
+            return
 
         print(f"\n✅ Comment added successfully!")
         print(f"Comment ID: {response.get('id')}")

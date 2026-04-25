@@ -307,7 +307,12 @@ Options:
   --side RIGHT|LEFT       Side of diff (default: RIGHT)
   --start-line N         Starting line for multi-line comment
   --start-side RIGHT|LEFT Starting side for multi-line comment
+  --no-fallback          Fail instead of falling back to a regular PR comment
 ```
+
+**Automatic fallback**: If the target line is outside the PR diff, the script
+automatically posts a regular PR comment instead, prefixed with the file and
+line context. Use `--no-fallback` to disable this and fail with an error.
 
 ## Best Practices
 
@@ -328,6 +333,7 @@ Options:
 - Provide better alternatives
 - Test inline comments on test PRs first
 - Use sparingly to avoid overwhelming
+- Lines outside the PR diff automatically fall back to regular PR comments
 
 ### PR Size Handling
 - Large PRs (>400 lines): Suggest splitting
